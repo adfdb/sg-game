@@ -17,7 +17,7 @@ JPG_LIB=$(JPG_DIR)/libjpeg.a
 all: $(PNG_LIB) $(JPG_LIB) sg-game
 
 sg-game: $(PNG_LIB) $(JPG_LIB) sg-game.c
-	gcc -O2 -g -Wall -I$(PNG_DIR) -I$(JPG_DIR) $(USE_SSL) sg-game.c -o $@ -lm -lz $(PNG_LIB) $(JPG_LIB) $(SSL_LIB)
+	gcc -O2 -g -Wall -I$(PNG_DIR) -I$(JPG_DIR) $(USE_SSL) sg-game.c -o $@ $(PNG_LIB) $(JPG_LIB) $(SSL_LIB) -lm -lz
 
 $(PNG_LIB): $(PNG_TGZ)
 	tar xzf $(PNG_TGZ) && cd $(PNG_DIR) && ./configure && make 
