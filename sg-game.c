@@ -33,6 +33,19 @@
 #include <openssl/evp.h>
 #include <openssl/err.h>
 
+#define VERSION "001"
+
+/*
+   0-3     .. the total length of the embedded message, including these 4 bytes
+   4-6     .. version
+   7       .. 'p' for plain, 'e' for encoded message
+   8       .. message type, 't' text (print to stdout) or 'f' file (save to file)
+   9       .. length of the file name, including the terminating character \0
+   10-     .. file name
+           .. embedded message
+*/
+const int iver = 4, ienc = 7, itype = 8, iflen = 9, imsg = 10;
+
 #ifndef kroundup32
 #define kroundup32(x) (--(x), (x)|=(x)>>1, (x)|=(x)>>2, (x)|=(x)>>4, (x)|=(x)>>8, (x)|=(x)>>16, ++(x))
 #endif
@@ -86,13 +99,6 @@ static void read_text(args_t *args)
     size_t len = 0, i;
     ssize_t nread;
 
-    // 4 bytes   .. the total length of the embedded message, including these 4 bytes
-    // 1 byte    .. 'p' for plain, 'e' for encoded message
-    // 1 byte    .. message type, 't' text (print to stdout) or 'f' file (save to file)
-    // 1 byte    .. length of the file name, including the terminating character \0
-    // x bytes .. file name
-    // y bytes .. embedded message
-
     fname = args->embed_secret ? args->embed_secret : "-";
     char *end = fname + strlen(fname);
     char *beg = end;
@@ -109,6 +115,7 @@ static void read_text(args_t *args)
 
     hts_expand(uint8_t, fname_len + 7, args->mmsg, args->msg);
     args->nmsg = 4;
+    memcpy(args->msg+args->nmsg, VERSION, 3); args->nmsg += 3;
     args->msg[args->nmsg++] = args->password ? 'e' : 'p';
     args->msg[args->nmsg++] = type;
     args->msg[args->nmsg++] = fname_len;
@@ -157,15 +164,15 @@ static void read_text(args_t *args)
         if ( !ctx ) { ERR_print_errors_fp(stderr); error(""); }
         uint8_t *buf = (uint8_t*) malloc(args->nmsg + 16);
         if ( EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, ivec) != 1 ) { ERR_print_errors_fp(stderr); error(""); }
-        if ( EVP_EncryptUpdate(ctx, buf, &len, args->msg+5, args->nmsg-5) != 1 ) { ERR_print_errors_fp(stderr); error(""); }
+        if ( EVP_EncryptUpdate(ctx, buf, &len, args->msg+itype, args->nmsg-itype) != 1 ) { ERR_print_errors_fp(stderr); error(""); }
         int ciphertext_len = len;
         if ( EVP_EncryptFinal_ex(ctx, buf + len, &len) != 1 ) { ERR_print_errors_fp(stderr); error(""); }
         ciphertext_len += len;
         EVP_CIPHER_CTX_free(ctx);
-        int aes_padding = ciphertext_len - args->nmsg + 5;
+        int aes_padding = ciphertext_len - args->nmsg + itype;
         args->nmsg += aes_padding;
         hts_expand(uint8_t, args->nmsg, args->mmsg, args->msg);
-        memcpy(args->msg+5, buf, args->nmsg-5);
+        memcpy(args->msg+itype, buf, args->nmsg-itype);
         free(buf);
 #else
         error("Not compiled with -DHAVE_SSL, cannot use -p\n");
@@ -193,15 +200,13 @@ static uint32_t get_text_length(uint8_t *msg)
 }
 static void parse_text(args_t *args, char **fname, uint32_t *nmsg, uint8_t **msg)
 {
-    // 0-3     .. the total length of the embedded message, including these 4 bytes
-    // 4       .. 'p' for plain, 'e' for encoded message
-    // 5       .. message type, 't' text (print to stdout) or 'f' file (save to file)
-    // 6       .. length of the file name, including the terminating character \0
-    // 7-      .. file name
-    //         .. embedded message
-
     uint32_t msg_len = get_text_length(args->msg);
-    if ( args->msg[4] == 'e' )
+
+    if ( memcmp(args->msg+iver,VERSION,3) )
+        error("Error: Incompatible program/file versions: %c%c%c vs %s\n",
+                (char)args->msg[iver],(char)args->msg[iver+1],(char)args->msg[iver+2],VERSION);
+
+    if ( args->msg[ienc] == 'e' )
     {
         // decrypt
         if ( !args->password ) error("Encrypted message, run with -p\n");
@@ -211,27 +216,28 @@ static void parse_text(args_t *args, char **fname, uint32_t *nmsg, uint8_t **msg
         init_key(args->password, key, ivec);
         EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
         if ( !ctx ) { ERR_print_errors_fp(stderr); error(""); }
-        uint8_t *buf = (uint8_t*) malloc(args->nmsg);
+        uint8_t *buf = (uint8_t*) malloc(msg_len);
         if ( EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, ivec) != 1 ) { ERR_print_errors_fp(stderr); error(""); }
-        if ( EVP_DecryptUpdate(ctx, buf, &len, args->msg+5, args->nmsg-5) != 1 ) { ERR_print_errors_fp(stderr); error(""); }
+        if ( EVP_DecryptUpdate(ctx, buf, &len, args->msg+itype, msg_len-itype) != 1 ) { ERR_print_errors_fp(stderr); error(""); }
         int plaintext_len = len;
         if ( EVP_DecryptFinal_ex(ctx, buf + len, &len) != 1 ) { ERR_print_errors_fp(stderr); error(""); }
         plaintext_len += len; 
         EVP_CIPHER_CTX_free(ctx);
-        int aes_padding =  args->nmsg - 5 - plaintext_len;
-        args->nmsg -= aes_padding;
-        memcpy(args->msg+5, buf, args->nmsg);
+        int aes_padding =  msg_len - itype - plaintext_len;
+        msg_len -= aes_padding;
+        memcpy(args->msg+itype, buf, msg_len);
+        free(buf);
 #else
         error("Not compiled with -DHAVE_SSL, cannot use -p\n");
 #endif
     }
-    else if ( args->msg[4] != 'p' ) error("No embedded message found in %s\n", args->input_fname);
+    else if ( args->msg[ienc] != 'p' ) error("No embedded message found in %s\n", args->input_fname);
 
-    uint8_t raw_fname_len = args->msg[6];
-    char *raw_fname = (char*)(args->msg + 7);
+    uint8_t raw_fname_len = args->msg[iflen];
+    char *raw_fname = (char*)(args->msg + imsg);
 
-    *nmsg = msg_len - 7 - raw_fname_len;
-    *msg  = args->msg + 7 + raw_fname_len;
+    *nmsg = msg_len - imsg - raw_fname_len;
+    *msg  = args->msg + imsg + raw_fname_len;
 
     if ( !strcmp("-",raw_fname) ) { *fname = NULL; return; }
     char *suffix = raw_fname + raw_fname_len;
@@ -247,7 +253,7 @@ static void parse_text(args_t *args, char **fname, uint32_t *nmsg, uint8_t **msg
     {
         struct stat buffer;   
         if ( stat(tmp, &buffer)!=0 ) return;
-        sprintf(tmp+prefix_len+(suffix-raw_fname),"%d%s",i++,suffix);
+        sprintf(tmp+prefix_len+(suffix-raw_fname),"-%d%s",i++,suffix);
     }
 }
 
@@ -400,13 +406,20 @@ static inline void ebuf_encode16(int16_t *buf, uint8_t byte)
     int i;
     for (i=0; i<8; i++)
     {
+        int change = 0;
         if ( byte & (1<<i) )
         {
-            if ( (uint16_t)buf[i]%2 == 0 ) buf[i] += buf[i]==32767 ? -1 : 1;    // bit on, set to odd
+            if ( (uint16_t)buf[i]%2 == 0 ) change = 1;  // bit is on, set to odd
         }
         else
         {
-            if ( (uint16_t)buf[i]%2 == 1 ) buf[i] += buf[ i]==32767 ? -1 : 1;    // bit off, set to even
+            if ( (uint16_t)buf[i]%2 == 1 ) change = 1;  // bit off, set to even
+        }
+        if ( change )
+        {
+            if ( buf[i]==32767 ) buf[i] = 32766;
+            else if ( buf[i]==-32768 ) buf[i] = -32767;
+            else buf[i] += (rand()&2) - 1;
         }
     }
 }
@@ -470,7 +483,15 @@ static void embed_in_jpg(args_t *args)
     src_coef_arrays = jpeg_read_coefficients(&srcinfo);
 
     if ( DCTSIZE!=8 ) error("fixme: assumption failed, DCTSIZE=%d\n",DCTSIZE);
-    int i,j,k,l, imsg = 0, ncomp = srcinfo.num_components;
+    int i,j,k,l, idst = ienc, jmsg = 0, ncomp = srcinfo.num_components;
+    int navail = 0;
+    for (i=0; i<ncomp; i++)
+    {
+        int wd = srcinfo.comp_info[i].width_in_blocks;
+        int ht = srcinfo.comp_info[i].height_in_blocks;
+        navail += wd*ht*DCTSIZE;
+    }
+    float nstep = (float)navail / args->nmsg;
     for (i=0; i<ncomp; i++)
     {
         int wd = srcinfo.comp_info[i].width_in_blocks;
@@ -482,13 +503,14 @@ static void embed_in_jpg(args_t *args)
             {
                 for (l=0; l<DCTSIZE2; l+=DCTSIZE)
                 {
-                    ebuf_encode16(&ptr[0][k][l], args->msg[imsg++]);
-                    if ( imsg >= args->nmsg ) goto done;
+                    if ( jmsg >= ienc && (idst++) < jmsg*nstep ) continue;
+                    ebuf_encode16(&ptr[0][k][l], args->msg[jmsg++]);
+                    if ( jmsg >= args->nmsg ) goto done;
                 }
             }
         }
     }
-    if ( imsg < args->nmsg ) error("The secret is %d bytes too big to embed in %s\n", args->nmsg - imsg, args->input_fname);
+    if ( jmsg < args->nmsg ) error("The secret is %d bytes too big to embed in %s\n", args->nmsg - jmsg, args->input_fname);
 done:
     jpeg_copy_critical_parameters(&srcinfo, &dstinfo);
     dst_coef_arrays = src_coef_arrays;
@@ -579,7 +601,8 @@ static void retrieve_from_jpg(args_t *args)
 
     if ( DCTSIZE!=8 ) error("fixme: assumption failed, DCTSIZE=%d\n",DCTSIZE);
 
-    int i,j,k,l, ncomp = srcinfo.num_components;
+    int i,j,k,l, idst = ienc, ncomp = srcinfo.num_components;
+    float nstep = 0;
     uint32_t msg_len = 0;
     for (i=0; i<ncomp; i++)
     {
@@ -592,10 +615,22 @@ static void retrieve_from_jpg(args_t *args)
             {
                 for (l=0; l<DCTSIZE2; l+=DCTSIZE)
                 {
+                    if ( args->nmsg >= ienc && (idst++) < args->nmsg*nstep ) continue;
                     hts_expand(uint8_t, args->nmsg+1, args->mmsg, args->msg);
                     args->msg[args->nmsg++] = ebuf_decode16(&ptr[0][k][l]);
-                    if ( args->nmsg==4 ) msg_len = get_text_length(args->msg);
-                    if ( args->nmsg > 4 && args->nmsg==msg_len ) goto done;
+                    if ( args->nmsg==iver ) 
+                    {
+                        msg_len = get_text_length(args->msg);
+                        int navail = 0, x;
+                        for (x=0; x<ncomp; x++)
+                        {
+                            int wd = srcinfo.comp_info[x].width_in_blocks;
+                            int ht = srcinfo.comp_info[x].height_in_blocks;
+                            navail += wd*ht*DCTSIZE;
+                        }
+                        nstep = (float)navail / msg_len;
+                    }
+                    if ( args->nmsg > iver && args->nmsg==msg_len ) goto done;
                 }
             }
         }

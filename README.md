@@ -8,6 +8,7 @@ Test
 ----
 
 ./sg-game -d test.png
+./sg-game -d test.jpg
 
 
 Usage
