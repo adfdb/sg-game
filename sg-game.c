@@ -88,8 +88,9 @@ static void init_key(char *password, uint8_t key[32], uint8_t ivec[16])
     // N.B. this is wrong, iv shouldn't be fixed, but random and embedded in the message.
     // However, for this toy application we don't really care
     int i, len = strlen(password);
-    for (i=0; i<32; i++) key[i] = password[i%len];
-    for (i=0; i<16; i++) ivec[i] = password[i%len];
+    memset(key,0,32);
+    for (i=0; i<32 && i<len; i++) key[i]  = password[i];
+    for (i=0; i<16; i++) ivec[i] = i;
 }
 #endif
 
@@ -161,12 +162,12 @@ static void read_text(args_t *args)
         uint8_t key[32], ivec[16];
         init_key(args->password, key, ivec);
         EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-        if ( !ctx ) { ERR_print_errors_fp(stderr); error(""); }
+        if ( !ctx ) { ERR_print_errors_fp(stderr); error("Could not initialize AES encryption\n"); }
         uint8_t *buf = (uint8_t*) malloc(args->nmsg + 16);
-        if ( EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, ivec) != 1 ) { ERR_print_errors_fp(stderr); error(""); }
-        if ( EVP_EncryptUpdate(ctx, buf, &len, args->msg+itype, args->nmsg-itype) != 1 ) { ERR_print_errors_fp(stderr); error(""); }
+        if ( EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, ivec) != 1 ) { ERR_print_errors_fp(stderr); error("Could not initialize AES encryption..\n"); }
+        if ( EVP_EncryptUpdate(ctx, buf, &len, args->msg+itype, args->nmsg-itype) != 1 ) { ERR_print_errors_fp(stderr); error("Incorrect password\n"); }
         int ciphertext_len = len;
-        if ( EVP_EncryptFinal_ex(ctx, buf + len, &len) != 1 ) { ERR_print_errors_fp(stderr); error(""); }
+        if ( EVP_EncryptFinal_ex(ctx, buf + len, &len) != 1 ) { ERR_print_errors_fp(stderr); error("Could not initialize AES encryption\n"); }
         ciphertext_len += len;
         EVP_CIPHER_CTX_free(ctx);
         int aes_padding = ciphertext_len - args->nmsg + itype;
@@ -203,7 +204,7 @@ static void parse_text(args_t *args, char **fname, uint32_t *nmsg, uint8_t **msg
     uint32_t msg_len = get_text_length(args->msg);
 
     if ( memcmp(args->msg+iver,VERSION,3) )
-        error("Error: Incompatible program/file versions: %c%c%c vs %s\n",
+        error("Error: No secret found or incompatible program/file versions: %c%c%c vs %s\n",
                 (char)args->msg[iver],(char)args->msg[iver+1],(char)args->msg[iver+2],VERSION);
 
     if ( args->msg[ienc] == 'e' )
@@ -215,12 +216,12 @@ static void parse_text(args_t *args, char **fname, uint32_t *nmsg, uint8_t **msg
         uint8_t key[32], ivec[16];
         init_key(args->password, key, ivec);
         EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-        if ( !ctx ) { ERR_print_errors_fp(stderr); error(""); }
+        if ( !ctx ) { ERR_print_errors_fp(stderr); error("Error: Could not initialize AES decryption\n"); }
         uint8_t *buf = (uint8_t*) malloc(msg_len);
-        if ( EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, ivec) != 1 ) { ERR_print_errors_fp(stderr); error(""); }
-        if ( EVP_DecryptUpdate(ctx, buf, &len, args->msg+itype, msg_len-itype) != 1 ) { ERR_print_errors_fp(stderr); error(""); }
+        if ( EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, ivec) != 1 ) { ERR_print_errors_fp(stderr); error("Error: Could not initialize AES decryption.\n"); }
+        if ( EVP_DecryptUpdate(ctx, buf, &len, args->msg+itype, msg_len-itype) != 1 ) { ERR_print_errors_fp(stderr); error("Error: AES decryption failed. An incorrect key perhpas..?\n"); }
         int plaintext_len = len;
-        if ( EVP_DecryptFinal_ex(ctx, buf + len, &len) != 1 ) { ERR_print_errors_fp(stderr); error(""); }
+        if ( EVP_DecryptFinal_ex(ctx, buf + len, &len) != 1 ) { ERR_print_errors_fp(stderr); error("Error: AES decryption failed. An incorrect key perhpas?\n"); }
         plaintext_len += len; 
         EVP_CIPHER_CTX_free(ctx);
         int aes_padding =  msg_len - itype - plaintext_len;
