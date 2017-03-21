@@ -53,6 +53,7 @@ const int iver = 4, ienc = 7, itype = 8, iflen = 9, imsg = 10;
 #define hts_expand(type_t, n, m, ptr) if ((n) > (m)) { \
     (m) = (n); kroundup32(m); \
     (ptr) = (type_t*)realloc((ptr), (m) * sizeof(type_t)); \
+    if ( !(ptr) ) error("Could not allocate %u bytes\n",(uint32_t)(m)*sizeof(type_t)); \
 }
 
 #define MODE_ENC 1
@@ -204,8 +205,10 @@ static void parse_text(args_t *args, char **fname, uint32_t *nmsg, uint8_t **msg
     uint32_t msg_len = get_text_length(args->msg);
 
     if ( memcmp(args->msg+iver,VERSION,3) )
-        error("Error: No secret found or incompatible program/file versions: %c%c%c vs %s\n",
-                (char)args->msg[iver],(char)args->msg[iver+1],(char)args->msg[iver+2],VERSION);
+        error("Error: No secret found or incompatible program/file versions: \\%o\\%o\\%o vs \\%o\\%o\\%o (\"%s\")\n",
+                (uint8_t)args->msg[iver],(uint8_t)args->msg[iver+1],(uint8_t)args->msg[iver+2],
+                (uint8_t)VERSION[0],(uint8_t)VERSION[1],(uint8_t)VERSION[2],
+                VERSION);
 
     if ( args->msg[ienc] == 'e' )
     {
@@ -563,6 +566,7 @@ static void retrieve_from_png(args_t *args)
         if ( args->nmsg==4 )
         {
             msg_len = get_text_length(args->msg);
+            if ( msg_len > PNG_IMAGE_SIZE(image) ) msg_len = PNG_IMAGE_SIZE(image) / 8;
             int pad = 8 - (msg_len % 8);
             hts_expand(uint8_t, msg_len+pad, args->mmsg, args->msg);
         }
